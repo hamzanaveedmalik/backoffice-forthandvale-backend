@@ -1,0 +1,357 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Org {
+  id              String           @id @default(uuid())
+  name            String
+  slug            String           @unique
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  attachments     Attachment[]
+  auditLogs       AuditLog[]
+  leadEvents      LeadEvent[]
+  leads           Lead[]
+  orderLines      OrderLine[]
+  orders          Order[]
+  priorityActions PriorityAction[]
+  quoteLines      QuoteLine[]
+  quotes          Quote[]
+  samples         Sample[]
+  shipments       Shipment[]
+  users           User[]
+
+  @@map("orgs")
+}
+
+model User {
+  id                  String           @id @default(uuid())
+  orgId               String
+  email               String           @unique
+  fullName            String
+  role                Role
+  passwordHash        String
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+  uploadedAttachments Attachment[]     @relation("AttachmentUploader")
+  auditLogs           AuditLog[]       @relation("AuditActor")
+  ownedLeads          Lead[]           @relation("LeadOwner")
+  requestedSamples    Sample[]         @relation("SampleRequester")
+  assignedActions     PriorityAction[] @relation("ActionAssignee")
+  org                 Org              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("users")
+}
+
+model Lead {
+  id           String           @id @default(uuid())
+  orgId        String
+  title        String
+  company      String
+  contactName  String
+  contactEmail String
+  contactPhone String?
+  source       String?
+  tags         String[]
+  priority     Int?
+  status       LeadStatus       @default(NEW)
+  ownerId      String?
+  notes        String?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  events       LeadEvent[]
+  priorityActions PriorityAction[]
+  org          Org              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner        User?            @relation("LeadOwner", fields: [ownerId], references: [id])
+  orders       Order[]
+  quotes       Quote[]
+  samples      Sample[]
+
+  @@map("leads")
+}
+
+model LeadEvent {
+  id        String   @id @default(uuid())
+  orgId     String
+  leadId    String
+  type      String
+  payload   Json?
+  createdAt DateTime @default(now())
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  org       Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("lead_events")
+}
+
+model Sample {
+  id             String       @id @default(uuid())
+  orgId          String
+  leadId         String
+  requestedById  String
+  itemName       String
+  quantity       Int
+  costEstimate   Decimal?
+  shipTo         Json
+  status         SampleStatus @default(REQUESTED)
+  courier        String?
+  trackingNumber String?
+  requestedAt    DateTime     @default(now())
+  dispatchedAt   DateTime?
+  deliveredAt    DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  lead           Lead         @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  org            Org          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  requestedBy    User         @relation("SampleRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+
+  @@map("samples")
+}
+
+model Quote {
+  id         String      @id @default(uuid())
+  orgId      String
+  leadId     String
+  quoteNo    String      @unique
+  currency   Currency    @default(USD)
+  incoterm   String?
+  subtotal   Decimal     @default(0)
+  shipping   Decimal     @default(0)
+  tax        Decimal     @default(0)
+  discount   Decimal     @default(0)
+  total      Decimal     @default(0)
+  validUntil DateTime?
+  status     QuoteStatus @default(DRAFTING)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  orders     Order[]
+  lines      QuoteLine[]
+  lead       Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  org        Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("quotes")
+}
+
+model QuoteLine {
+  id          String  @id @default(uuid())
+  orgId       String
+  quoteId     String
+  sku         String
+  description String
+  qty         Int
+  unitPrice   Decimal
+  lineTotal   Decimal @default(0)
+  org         Org     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  quote       Quote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@map("quote_lines")
+}
+
+model Order {
+  id              String      @id @default(uuid())
+  orgId           String
+  leadId          String
+  quoteId         String?
+  orderNo         String      @unique
+  poNo            String?
+  currency        Currency    @default(USD)
+  subtotal        Decimal     @default(0)
+  shipping        Decimal     @default(0)
+  tax             Decimal     @default(0)
+  discount        Decimal     @default(0)
+  total           Decimal     @default(0)
+  status          OrderStatus @default(PENDING)
+  productionStart DateTime?
+  productionEta   DateTime?
+  paymentStatus   String      @default("UNPAID")
+  paymentTerms    String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  lines           OrderLine[]
+  lead            Lead        @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  org             Org         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  quote           Quote?      @relation(fields: [quoteId], references: [id])
+  shipments       Shipment[]
+
+  @@map("orders")
+}
+
+model OrderLine {
+  id          String  @id @default(uuid())
+  orgId       String
+  orderId     String
+  sku         String
+  description String
+  qty         Int
+  unitPrice   Decimal
+  lineTotal   Decimal @default(0)
+  order       Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  org         Org     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("order_lines")
+}
+
+model Shipment {
+  id             String         @id @default(uuid())
+  orgId          String
+  orderId        String
+  carrier        String?
+  trackingNumber String?        @unique
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+  status         ShipmentStatus @default(LABEL_CREATED)
+  origin         Json?
+  destination    Json?
+  freightCost    Decimal?
+  documentsUrl   String?
+  createdAt      DateTime       @default(now())
+  order          Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  org            Org            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("shipments")
+}
+
+model Attachment {
+  id           String   @id @default(uuid())
+  orgId        String
+  entityType   String
+  entityId     String
+  filePath     String
+  mimeType     String
+  uploadedById String
+  createdAt    DateTime @default(now())
+  org          Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  uploadedBy   User     @relation("AttachmentUploader", fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@map("attachments")
+}
+
+model AuditLog {
+  id       String   @id @default(uuid())
+  orgId    String
+  actorId  String
+  entity   String
+  entityId String
+  action   String
+  before   Json?
+  after    Json?
+  at       DateTime @default(now())
+  actor    User     @relation("AuditActor", fields: [actorId], references: [id], onDelete: Cascade)
+  org      Org      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("audit_logs")
+}
+
+model PriorityAction {
+  id          String            @id @default(uuid())
+  orgId       String
+  leadId      String?
+  type        PriorityActionType
+  priority    PriorityLevel     @default(MEDIUM)
+  title       String
+  description String
+  dueDate     DateTime
+  status      ActionStatus      @default(PENDING)
+  assignedTo  String?
+  metadata    Json?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  completedAt DateTime?
+  org         Org               @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  lead        Lead?             @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assignee    User?             @relation("ActionAssignee", fields: [assignedTo], references: [id])
+
+  @@map("priority_actions")
+}
+
+enum LeadStatus {
+  NEW
+  QUALIFIED
+  CONTACTED
+  FOLLOW_UP
+  DISQUALIFIED
+  CONVERTED
+}
+
+enum SampleStatus {
+  REQUESTED
+  IN_PROGRESS
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+}
+
+enum QuoteStatus {
+  DRAFTING
+  SENT
+  ACCEPTED
+  REJECTED
+  EXPIRED
+}
+
+enum OrderStatus {
+  PENDING
+  IN_PRODUCTION
+  QC
+  READY_TO_SHIP
+  PARTIALLY_SHIPPED
+  SHIPPED
+  COMPLETED
+  CANCELLED
+}
+
+enum ShipmentStatus {
+  LABEL_CREATED
+  IN_TRANSIT
+  OUT_FOR_DELIVERY
+  DELIVERED
+  EXCEPTION
+  RETURN_TO_SENDER
+}
+
+enum Currency {
+  USD
+  GBP
+  EUR
+  PKR
+  SAR
+  AED
+}
+
+enum Role {
+  SUPER
+  USER
+  MINI
+}
+
+enum PriorityActionType {
+  FOLLOW_UP
+  SAMPLE_DISPATCH
+  QUOTE_EXPIRING
+  NEW_LEAD_RESPONSE
+  SAMPLE_FOLLOW_UP
+  QUOTE_FOLLOW_UP
+  ORDER_FOLLOW_UP
+  PAYMENT_FOLLOW_UP
+  CUSTOM
+}
+
+enum PriorityLevel {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ActionStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  OVERDUE
+}
