@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import bcrypt from 'bcryptjs';
+import multer from 'multer';
 import { PrismaClient } from '@prisma/client';
 import {
     createPriorityAction,
@@ -11,10 +12,40 @@ import {
     generateLeadBasedPriorityActions,
     getPriorityActionStats
 } from './lib/priorityActions.js';
+import {
+    parseExcelFile,
+    calculatePriorityScore,
+    getPriorityLevel,
+    generateActionDetails
+} from './lib/excelProcessor.js';
 
 const app = express();
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 8787;
+
+// Configure multer for file uploads (store in memory)
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB max file size
+    },
+    fileFilter: (req, file, cb) => {
+        // Accept only Excel files
+        const allowedMimes = [
+            'application/vnd.ms-excel',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'application/octet-stream'
+        ];
+        
+        if (allowedMimes.includes(file.mimetype) || 
+            file.originalname.endsWith('.xlsx') || 
+            file.originalname.endsWith('.xls')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only Excel files (.xlsx, .xls) are allowed'));
+        }
+    }
+});
 
 // Middleware - CORS Configuration
 app.use(cors({
@@ -333,6 +364,163 @@ app.get('/api/priority-actions/stats', async (req, res) => {
 });
 
 // Leads API Routes
+
+// Excel Upload Endpoint - Upload Excel file and auto-generate priority actions
+app.post('/api/leads/upload-excel', upload.single('file'), async (req, res) => {
+    try {
+        // Validate file upload
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        console.log(`📊 Processing Excel file: ${req.file.originalname}`);
+
+        // Parse Excel file
+        const parseResult = parseExcelFile(req.file.buffer);
+        
+        if (!parseResult.success) {
+            return res.status(400).json({ 
+                error: 'Failed to parse Excel file', 
+                details: parseResult.error 
+            });
+        }
+
+        const { leads } = parseResult;
+        
+        if (leads.length === 0) {
+            return res.status(400).json({ error: 'No valid leads found in Excel file' });
+        }
+
+        // Get organization (use default for now)
+        const org = await prisma.org.findFirst({
+            where: { slug: 'default' }
+        });
+
+        if (!org) {
+            return res.status(500).json({ error: 'Organization not found' });
+        }
+
+        // Track processing results
+        const results = {
+            processed: leads.length,
+            leadsCreated: 0,
+            leadsUpdated: 0,
+            actionsCreated: 0,
+            errors: [],
+            priorityBreakdown: {
+                URGENT: 0,
+                HIGH: 0,
+                MEDIUM: 0,
+                LOW: 0
+            }
+        };
+
+        // Process each lead
+        for (const leadData of leads) {
+            try {
+                // Check if lead already exists (by company name)
+                const existingLead = await prisma.lead.findFirst({
+                    where: {
+                        orgId: org.id,
+                        company: leadData.company
+                    }
+                });
+
+                let lead;
+
+                if (existingLead) {
+                    // Update existing lead
+                    lead = await prisma.lead.update({
+                        where: { id: existingLead.id },
+                        data: {
+                            contactName: leadData.contacts[0]?.name || existingLead.contactName,
+                            contactEmail: existingLead.contactEmail || `contact@${leadData.company.toLowerCase().replace(/\s+/g, '')}.com`,
+                            tags: leadData.buyerRoles,
+                            notes: `Visitor Count: ${leadData.visitorCount}\nLinkedIn: ${leadData.linkedinCompany}\nWebsite: ${leadData.website}`,
+                            status: 'NEW'
+                        }
+                    });
+                    results.leadsUpdated++;
+                } else {
+                    // Create new lead
+                    lead = await prisma.lead.create({
+                        data: {
+                            orgId: org.id,
+                            title: `${leadData.company} - ${leadData.visitorCount} visits`,
+                            company: leadData.company,
+                            contactName: leadData.contacts[0]?.name || 'Unknown',
+                            contactEmail: `contact@${leadData.company.toLowerCase().replace(/\s+/g, '')}.com`,
+                            contactPhone: null,
+                            source: 'Excel Import',
+                            tags: leadData.buyerRoles,
+                            priority: leadData.visitorCount >= 6 ? 5 : leadData.visitorCount >= 4 ? 4 : 3,
+                            status: 'NEW',
+                            notes: `Visitor Count: ${leadData.visitorCount}\nLinkedIn: ${leadData.linkedinCompany}\nWebsite: ${leadData.website}`
+                        }
+                    });
+                    results.leadsCreated++;
+                }
+
+                // Calculate priority score
+                const score = calculatePriorityScore(leadData);
+                const priorityInfo = getPriorityLevel(score);
+                const { title, description } = generateActionDetails(leadData, score, priorityInfo);
+
+                // Calculate due date
+                const dueDate = new Date();
+                dueDate.setDate(dueDate.getDate() + priorityInfo.daysUntilDue);
+
+                // Create priority action
+                const action = await prisma.priorityAction.create({
+                    data: {
+                        orgId: org.id,
+                        leadId: lead.id,
+                        type: priorityInfo.actionType,
+                        priority: priorityInfo.priority,
+                        title,
+                        description,
+                        dueDate,
+                        status: 'PENDING',
+                        metadata: {
+                            visitorCount: leadData.visitorCount,
+                            score,
+                            source: 'Excel Import',
+                            contacts: leadData.contacts,
+                            buyerRoles: leadData.buyerRoles
+                        }
+                    }
+                });
+
+                results.actionsCreated++;
+                results.priorityBreakdown[priorityInfo.priority]++;
+
+                console.log(`✅ Created action for ${leadData.company} (Score: ${score}, Priority: ${priorityInfo.priority})`);
+
+            } catch (error) {
+                console.error(`❌ Error processing lead ${leadData.company}:`, error);
+                results.errors.push({
+                    company: leadData.company,
+                    error: error.message
+                });
+            }
+        }
+
+        // Return summary
+        res.json({
+            success: true,
+            message: `Processed ${results.processed} leads from Excel file`,
+            results
+        });
+
+    } catch (error) {
+        console.error('Excel upload error:', error);
+        res.status(500).json({ 
+            error: 'Failed to process Excel file', 
+            details: error.message 
+        });
+    }
+});
+
 app.get('/api/leads', async (req, res) => {
     try {
         const { orgId = 'default' } = req.query;
@@ -485,7 +673,7 @@ app.post('/api/fix-passwords', async (req, res) => {
 
             // Hash the plain text password
             const hashedPassword = await bcrypt.hash(user.passwordHash, 10);
-            
+
             await prisma.user.update({
                 where: { id: user.id },
                 data: { passwordHash: hashedPassword }
