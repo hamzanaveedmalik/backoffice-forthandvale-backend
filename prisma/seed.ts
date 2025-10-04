@@ -24,7 +24,7 @@ async function main() {
   const org = await prisma.org.create({
     data: {
       name: 'Forth & Vale Leather',
-      slug: 'forth-vale-leather',
+      slug: 'default',
     },
   });
   console.log(`✅ Created organization: ${org.name}`);
