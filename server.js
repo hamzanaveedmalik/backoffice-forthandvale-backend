@@ -469,6 +469,43 @@ app.get('/api/db-test', async (req, res) => {
     }
 });
 
+// Fix unhashed passwords endpoint (temporary - remove after use)
+app.post('/api/fix-passwords', async (req, res) => {
+    try {
+        const usersToFix = await prisma.user.findMany();
+        const fixed = [];
+        const skipped = [];
+
+        for (const user of usersToFix) {
+            // Check if password is already hashed (bcrypt hashes start with $2b$)
+            if (user.passwordHash.startsWith('$2b$') || user.passwordHash.startsWith('$2a$')) {
+                skipped.push({ email: user.email, reason: 'Already hashed' });
+                continue;
+            }
+
+            // Hash the plain text password
+            const hashedPassword = await bcrypt.hash(user.passwordHash, 10);
+            
+            await prisma.user.update({
+                where: { id: user.id },
+                data: { passwordHash: hashedPassword }
+            });
+
+            fixed.push({ email: user.email, status: 'Fixed' });
+        }
+
+        res.json({
+            success: true,
+            message: `Fixed ${fixed.length} users, skipped ${skipped.length} users`,
+            fixed,
+            skipped
+        });
+    } catch (error) {
+        console.error('Fix passwords error:', error);
+        res.status(500).json({ error: 'Failed to fix passwords', details: error.message });
+    }
+});
+
 // Seed endpoint (for initial setup only - remove after use)
 app.post('/api/seed', async (req, res) => {
     try {
