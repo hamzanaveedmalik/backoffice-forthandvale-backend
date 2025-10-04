@@ -409,6 +409,39 @@ app.delete('/api/leads/:id', async (req, res) => {
     }
 });
 
+// Database connection test endpoint
+app.get('/api/db-test', async (req, res) => {
+    try {
+        // Test database connection with a simple query
+        await prisma.$queryRaw`SELECT 1`;
+        
+        // Check environment variables (masked)
+        const dbUrl = process.env.DATABASE_URL || 'NOT SET';
+        const directUrl = process.env.DIRECT_URL || 'NOT SET';
+        
+        res.json({
+            success: true,
+            message: 'Database connection successful',
+            env: {
+                DATABASE_URL: dbUrl ? `${dbUrl.substring(0, 30)}...` : 'NOT SET',
+                DIRECT_URL: directUrl ? `${directUrl.substring(0, 30)}...` : 'NOT SET',
+                NODE_ENV: process.env.NODE_ENV || 'NOT SET'
+            }
+        });
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: 'Database connection failed',
+            details: error.message,
+            env: {
+                DATABASE_URL: process.env.DATABASE_URL ? 'SET' : 'NOT SET',
+                DIRECT_URL: process.env.DIRECT_URL ? 'SET' : 'NOT SET',
+                NODE_ENV: process.env.NODE_ENV || 'NOT SET'
+            }
+        });
+    }
+});
+
 // Seed endpoint (for initial setup only - remove after use)
 app.post('/api/seed', async (req, res) => {
     try {
