@@ -21,14 +21,14 @@ app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (mobile apps, Postman, curl, etc.)
         if (!origin) return callback(null, true);
-        
+
         const allowedOrigins = [
             'https://backoffice.forthandvale.com',           // Production frontend
             'http://backoffice.forthandvale.com',            // Production frontend (http)
             /^https:\/\/.*\.vercel\.app$/,                   // All Vercel preview deployments
             /^http:\/\/localhost:\d+$/,                      // All localhost ports (development)
         ];
-        
+
         // Check if origin matches any allowed pattern
         const isAllowed = allowedOrigins.some(allowed => {
             if (allowed instanceof RegExp) {
@@ -36,7 +36,7 @@ app.use(cors({
             }
             return allowed === origin;
         });
-        
+
         if (isAllowed) {
             callback(null, true);
         } else {
@@ -98,7 +98,6 @@ app.get('/api/users', async (req, res) => {
             email: user.email,
             fullName: user.fullName,
             role: user.role.toLowerCase(),
-            password: user.passwordHash, // Include password for authentication
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
         }));
@@ -126,7 +125,6 @@ app.get('/api/users/email/:email', async (req, res) => {
             email: user.email,
             fullName: user.fullName,
             role: user.role.toLowerCase(),
-            password: user.passwordHash, // Include password for authentication
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
         };
@@ -142,11 +140,19 @@ app.post('/api/users', async (req, res) => {
     try {
         const { email, fullName, role, password } = req.body;
 
+        // Validate required fields
+        if (!email || !fullName || !role || !password) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
         // Get the first organization (for now)
         const org = await prisma.org.findFirst();
         if (!org) {
             return res.status(500).json({ error: 'No organization found' });
         }
+
+        // Hash the password before storing
+        const passwordHash = await bcrypt.hash(password, 10);
 
         const user = await prisma.user.create({
             data: {
@@ -154,7 +160,7 @@ app.post('/api/users', async (req, res) => {
                 email,
                 fullName,
                 role: role.toUpperCase(),
-                passwordHash: password, // In production, hash this
+                passwordHash,
             }
         });
 
@@ -163,7 +169,6 @@ app.post('/api/users', async (req, res) => {
             email: user.email,
             fullName: user.fullName,
             role: user.role.toLowerCase(),
-            password: user.passwordHash, // Include password for authentication
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
         };
@@ -178,8 +183,15 @@ app.post('/api/users', async (req, res) => {
 app.put('/api/users/:id', async (req, res) => {
     try {
         const { id } = req.params;
-        const updates = req.body;
+        const updates = { ...req.body };
 
+        // Hash password if it's being updated
+        if (updates.password) {
+            updates.passwordHash = await bcrypt.hash(updates.password, 10);
+            delete updates.password; // Remove plain password from updates
+        }
+
+        // Convert role to uppercase if provided
         if (updates.role) {
             updates.role = updates.role.toUpperCase();
         }
@@ -194,7 +206,6 @@ app.put('/api/users/:id', async (req, res) => {
             email: user.email,
             fullName: user.fullName,
             role: user.role.toLowerCase(),
-            password: user.passwordHash, // Include password for authentication
             createdAt: user.createdAt,
             updatedAt: user.updatedAt,
         };
