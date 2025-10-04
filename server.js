@@ -16,21 +16,37 @@ const app = express();
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 8787;
 
-// Middleware
+// Middleware - CORS Configuration
 app.use(cors({
-    origin: [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:3002',
-        'http://localhost:3003',
-        'http://localhost:3004',
-        'http://localhost:8082',
-        'http://localhost:8080',
-        'http://localhost:8081',
-        'https://backoffice.forthandvale.com',
-        'https://backoffice-forthandvale-27lbbpcq4-hamzas-projects-3115b06e.vercel.app'
-    ],
-    credentials: true
+    origin: function (origin, callback) {
+        // Allow requests with no origin (mobile apps, Postman, curl, etc.)
+        if (!origin) return callback(null, true);
+        
+        const allowedOrigins = [
+            'https://backoffice.forthandvale.com',           // Production frontend
+            'http://backoffice.forthandvale.com',            // Production frontend (http)
+            /^https:\/\/.*\.vercel\.app$/,                   // All Vercel preview deployments
+            /^http:\/\/localhost:\d+$/,                      // All localhost ports (development)
+        ];
+        
+        // Check if origin matches any allowed pattern
+        const isAllowed = allowedOrigins.some(allowed => {
+            if (allowed instanceof RegExp) {
+                return allowed.test(origin);
+            }
+            return allowed === origin;
+        });
+        
+        if (isAllowed) {
+            callback(null, true);
+        } else {
+            console.warn(`CORS blocked origin: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 
@@ -414,11 +430,11 @@ app.get('/api/db-test', async (req, res) => {
     try {
         // Test database connection with a simple query
         await prisma.$queryRaw`SELECT 1`;
-        
+
         // Check environment variables (masked)
         const dbUrl = process.env.DATABASE_URL || 'NOT SET';
         const directUrl = process.env.DIRECT_URL || 'NOT SET';
-        
+
         res.json({
             success: true,
             message: 'Database connection successful',
