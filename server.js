@@ -18,6 +18,8 @@ import {
     getPriorityLevel,
     generateActionDetails
 } from './lib/excelProcessor.js';
+import { parsePricingExcel, validatePricingImport } from './lib/pricingExcelParser.js';
+import { PricingCalculator } from './lib/pricingCalculator.js';
 
 const app = express();
 const prisma = new PrismaClient();
@@ -36,9 +38,9 @@ const upload = multer({
             'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'application/octet-stream'
         ];
-        
-        if (allowedMimes.includes(file.mimetype) || 
-            file.originalname.endsWith('.xlsx') || 
+
+        if (allowedMimes.includes(file.mimetype) ||
+            file.originalname.endsWith('.xlsx') ||
             file.originalname.endsWith('.xls')) {
             cb(null, true);
         } else {
@@ -377,16 +379,16 @@ app.post('/api/leads/upload-excel', upload.single('file'), async (req, res) => {
 
         // Parse Excel file
         const parseResult = parseExcelFile(req.file.buffer);
-        
+
         if (!parseResult.success) {
-            return res.status(400).json({ 
-                error: 'Failed to parse Excel file', 
-                details: parseResult.error 
+            return res.status(400).json({
+                error: 'Failed to parse Excel file',
+                details: parseResult.error
             });
         }
 
         const { leads } = parseResult;
-        
+
         if (leads.length === 0) {
             return res.status(400).json({ error: 'No valid leads found in Excel file' });
         }
@@ -514,9 +516,9 @@ app.post('/api/leads/upload-excel', upload.single('file'), async (req, res) => {
 
     } catch (error) {
         console.error('Excel upload error:', error);
-        res.status(500).json({ 
-            error: 'Failed to process Excel file', 
-            details: error.message 
+        res.status(500).json({
+            error: 'Failed to process Excel file',
+            details: error.message
         });
     }
 });
@@ -621,6 +623,865 @@ app.delete('/api/leads/:id', async (req, res) => {
     } catch (error) {
         console.error('Error deleting lead:', error);
         res.status(500).json({ error: 'Failed to delete lead' });
+    }
+});
+
+// ==================== PRICING MODULE API ====================
+
+// Middleware to check RBAC for rate management
+const requireSuper = async (req, res, next) => {
+    const userId = req.headers['x-user-id'];
+    if (!userId) {
+        return res.status(401).json({ error: 'User ID required' });
+    }
+
+    const user = await prisma.user.findUnique({
+        where: { id: userId }
+    });
+
+    if (!user || user.role !== 'SUPER') {
+        return res.status(403).json({ error: 'Super User access required' });
+    }
+
+    req.user = user;
+    next();
+};
+
+// Upload and parse pricing Excel
+app.post('/api/pricing/imports', upload.single('file'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+
+        const userId = req.headers['x-user-id'];
+        if (!userId) {
+            return res.status(401).json({ error: 'User ID required' });
+        }
+
+        const importName = req.body.name || `Import ${new Date().toISOString()}`;
+
+        console.log(`📊 Processing pricing Excel: ${req.file.originalname}`);
+
+        // Parse Excel
+        const parseResult = parsePricingExcel(req.file.buffer);
+
+        if (!parseResult.success) {
+            return res.status(400).json({
+                error: 'Failed to parse Excel file',
+                details: parseResult.error
+            });
+        }
+
+        const { items, errors } = parseResult;
+
+        if (items.length === 0) {
+            return res.status(400).json({
+                error: 'No valid items found in Excel file',
+                errors
+            });
+        }
+
+        // Validate items
+        const validation = validatePricingImport(items);
+        if (!validation.valid) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                errors: validation.errors,
+                warnings: validation.warnings
+            });
+        }
+
+        // Create import record
+        const importRecord = await prisma.import.create({
+            data: {
+                name: importName,
+                createdById: userId
+            }
+        });
+
+        // Process items - upsert products and create import items
+        const createdItems = [];
+        for (const item of items) {
+            // Upsert product
+            const product = await prisma.product.upsert({
+                where: { sku: item.sku },
+                update: {
+                    name: item.name,
+                    hsCode: item.hsCode,
+                    weightKg: item.weightKg,
+                    volumeM3: item.volumeM3
+                },
+                create: {
+                    sku: item.sku,
+                    name: item.name,
+                    hsCode: item.hsCode,
+                    weightKg: item.weightKg,
+                    volumeM3: item.volumeM3
+                }
+            });
+
+            // Create import item
+            const importItem = await prisma.importItem.create({
+                data: {
+                    importId: importRecord.id,
+                    productId: product.id,
+                    purchasePricePkr: item.purchasePricePkr,
+                    units: item.units
+                }
+            });
+
+            createdItems.push(importItem);
+        }
+
+        res.json({
+            success: true,
+            import: {
+                id: importRecord.id,
+                name: importRecord.name,
+                createdAt: importRecord.createdAt,
+                itemsCount: createdItems.length
+            },
+            validation: {
+                totalRows: parseResult.totalRows,
+                validRows: parseResult.validRows,
+                invalidRows: parseResult.invalidRows,
+                warnings: validation.warnings
+            }
+        });
+
+    } catch (error) {
+        console.error('Pricing import error:', error);
+        res.status(500).json({
+            error: 'Failed to process pricing import',
+            details: error.message
+        });
+    }
+});
+
+// Get all imports
+app.get('/api/pricing/imports', async (req, res) => {
+    try {
+        const imports = await prisma.import.findMany({
+            include: {
+                createdBy: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        email: true
+                    }
+                },
+                _count: {
+                    select: {
+                        items: true,
+                        pricingRuns: true
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        res.json(imports);
+    } catch (error) {
+        console.error('Error fetching imports:', error);
+        res.status(500).json({ error: 'Failed to fetch imports' });
+    }
+});
+
+// Get single import with items
+app.get('/api/pricing/imports/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const importRecord = await prisma.import.findUnique({
+            where: { id },
+            include: {
+                createdBy: {
+                    select: {
+                        id: true,
+                        fullName: true,
+                        email: true
+                    }
+                },
+                items: {
+                    include: {
+                        product: true
+                    }
+                }
+            }
+        });
+
+        if (!importRecord) {
+            return res.status(404).json({ error: 'Import not found' });
+        }
+
+        res.json(importRecord);
+    } catch (error) {
+        console.error('Error fetching import:', error);
+        res.status(500).json({ error: 'Failed to fetch import' });
+    }
+});
+
+// Create pricing run
+app.post('/api/pricing/runs', async (req, res) => {
+    try {
+        const {
+            importId,
+            destination,
+            incoterm,
+            fxDate,
+            marginMode,
+            marginValue,
+            freightModel,
+            insuranceModel,
+            feesOverrides,
+            thresholdToggles,
+            rounding
+        } = req.body;
+
+        // Validate required fields
+        if (!importId || !destination || !incoterm || !marginMode || marginValue === undefined) {
+            return res.status(400).json({ error: 'Missing required fields' });
+        }
+
+        // Verify import exists
+        const importRecord = await prisma.import.findUnique({
+            where: { id: importId }
+        });
+
+        if (!importRecord) {
+            return res.status(404).json({ error: 'Import not found' });
+        }
+
+        // Create pricing run with placeholder snapshot (will be updated after calculation)
+        const pricingRun = await prisma.pricingRun.create({
+            data: {
+                importId,
+                destination,
+                incoterm,
+                fxDate: fxDate === 'latest' ? new Date() : new Date(fxDate),
+                marginMode,
+                marginValue,
+                freightModel,
+                insuranceModel,
+                feesOverrides: feesOverrides || {},
+                thresholdToggles: thresholdToggles || {},
+                rounding: rounding || {},
+                snapshotRates: {} // Will be updated by calculate
+            }
+        });
+
+        res.status(201).json({
+            success: true,
+            pricingRun: {
+                id: pricingRun.id,
+                importId: pricingRun.importId,
+                destination: pricingRun.destination,
+                incoterm: pricingRun.incoterm,
+                createdAt: pricingRun.createdAt
+            }
+        });
+
+    } catch (error) {
+        console.error('Error creating pricing run:', error);
+        res.status(500).json({
+            error: 'Failed to create pricing run',
+            details: error.message
+        });
+    }
+});
+
+// Calculate pricing for a run
+app.post('/api/pricing/runs/:id/calculate', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { page = 1, limit = 50 } = req.query;
+
+        // Get pricing run
+        const pricingRun = await prisma.pricingRun.findUnique({
+            where: { id }
+        });
+
+        if (!pricingRun) {
+            return res.status(404).json({ error: 'Pricing run not found' });
+        }
+
+        // Prepare run config
+        const runConfig = {
+            destination: pricingRun.destination,
+            incoterm: pricingRun.incoterm,
+            fxDate: pricingRun.fxDate,
+            marginMode: pricingRun.marginMode,
+            marginValue: parseFloat(pricingRun.marginValue),
+            freightModel: pricingRun.freightModel,
+            insuranceModel: pricingRun.insuranceModel,
+            feesOverrides: pricingRun.feesOverrides,
+            thresholdToggles: pricingRun.thresholdToggles,
+            rounding: pricingRun.rounding
+        };
+
+        // Calculate pricing
+        const { results, snapshotRates } = await PricingCalculator.calculateImportPricing(
+            pricingRun.importId,
+            runConfig
+        );
+
+        // Delete existing items for this run
+        await prisma.pricingRunItem.deleteMany({
+            where: { pricingRunId: id }
+        });
+
+        // Create pricing run items
+        for (const result of results) {
+            await prisma.pricingRunItem.create({
+                data: {
+                    pricingRunId: id,
+                    importItemId: result.importItemId,
+                    breakdownJson: result.breakdownJson,
+                    basePkr: result.basePkr,
+                    sellingPrice: result.sellingPrice,
+                    landedCost: result.landedCost,
+                    marginPct: result.marginPct
+                }
+            });
+        }
+
+        // Update pricing run with snapshot
+        await prisma.pricingRun.update({
+            where: { id },
+            data: {
+                snapshotRates
+            }
+        });
+
+        // Get paginated results
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const items = await prisma.pricingRunItem.findMany({
+            where: { pricingRunId: id },
+            include: {
+                importItem: {
+                    include: {
+                        product: true
+                    }
+                }
+            },
+            skip,
+            take: parseInt(limit),
+            orderBy: { createdAt: 'asc' }
+        });
+
+        const totalItems = results.length;
+
+        // Calculate totals
+        const totals = results.reduce((acc, item) => {
+            acc.totalBasePkr += parseFloat(item.basePkr);
+            acc.totalLandedCost += parseFloat(item.landedCost);
+            acc.totalSellingPrice += parseFloat(item.sellingPrice);
+            return acc;
+        }, {
+            totalBasePkr: 0,
+            totalLandedCost: 0,
+            totalSellingPrice: 0
+        });
+
+        totals.averageMarginPct = (totals.totalSellingPrice - totals.totalLandedCost) / totals.totalSellingPrice;
+
+        res.json({
+            success: true,
+            pricingRunId: id,
+            items,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: totalItems,
+                pages: Math.ceil(totalItems / parseInt(limit))
+            },
+            totals,
+            snapshotRates
+        });
+
+    } catch (error) {
+        console.error('Error calculating pricing:', error);
+        res.status(500).json({
+            error: 'Failed to calculate pricing',
+            details: error.message
+        });
+    }
+});
+
+// Get pricing run results
+app.get('/api/pricing/runs/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { page = 1, limit = 50 } = req.query;
+
+        const pricingRun = await prisma.pricingRun.findUnique({
+            where: { id },
+            include: {
+                import: {
+                    include: {
+                        createdBy: {
+                            select: {
+                                id: true,
+                                fullName: true,
+                                email: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!pricingRun) {
+            return res.status(404).json({ error: 'Pricing run not found' });
+        }
+
+        // Get paginated items
+        const skip = (parseInt(page) - 1) * parseInt(limit);
+        const items = await prisma.pricingRunItem.findMany({
+            where: { pricingRunId: id },
+            include: {
+                importItem: {
+                    include: {
+                        product: true
+                    }
+                }
+            },
+            skip,
+            take: parseInt(limit),
+            orderBy: { createdAt: 'asc' }
+        });
+
+        const totalItems = await prisma.pricingRunItem.count({
+            where: { pricingRunId: id }
+        });
+
+        // Calculate totals
+        const allItems = await prisma.pricingRunItem.findMany({
+            where: { pricingRunId: id }
+        });
+
+        const totals = allItems.reduce((acc, item) => {
+            acc.totalBasePkr += parseFloat(item.basePkr);
+            acc.totalLandedCost += parseFloat(item.landedCost);
+            acc.totalSellingPrice += parseFloat(item.sellingPrice);
+            return acc;
+        }, {
+            totalBasePkr: 0,
+            totalLandedCost: 0,
+            totalSellingPrice: 0
+        });
+
+        totals.averageMarginPct = totalItems > 0 ?
+            (totals.totalSellingPrice - totals.totalLandedCost) / totals.totalSellingPrice : 0;
+
+        res.json({
+            pricingRun,
+            items,
+            pagination: {
+                page: parseInt(page),
+                limit: parseInt(limit),
+                total: totalItems,
+                pages: Math.ceil(totalItems / parseInt(limit))
+            },
+            totals
+        });
+
+    } catch (error) {
+        console.error('Error fetching pricing run:', error);
+        res.status(500).json({ error: 'Failed to fetch pricing run' });
+    }
+});
+
+// Get all pricing runs
+app.get('/api/pricing/runs', async (req, res) => {
+    try {
+        const runs = await prisma.pricingRun.findMany({
+            include: {
+                import: {
+                    select: {
+                        id: true,
+                        name: true,
+                        createdAt: true
+                    }
+                },
+                _count: {
+                    select: {
+                        items: true
+                    }
+                }
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+
+        res.json(runs);
+    } catch (error) {
+        console.error('Error fetching pricing runs:', error);
+        res.status(500).json({ error: 'Failed to fetch pricing runs' });
+    }
+});
+
+// ==================== RATE MANAGEMENT (RBAC: Super User Only) ====================
+
+// FX Rates
+app.get('/api/pricing/fx-rates', async (req, res) => {
+    try {
+        const fxRates = await prisma.fxRate.findMany({
+            orderBy: { asOfDate: 'desc' }
+        });
+        res.json(fxRates);
+    } catch (error) {
+        console.error('Error fetching FX rates:', error);
+        res.status(500).json({ error: 'Failed to fetch FX rates' });
+    }
+});
+
+app.post('/api/pricing/fx-rates', requireSuper, async (req, res) => {
+    try {
+        const { asOfDate, pkrToGbp, pkrToUsd, pkrToEur } = req.body;
+
+        const fxRate = await prisma.fxRate.create({
+            data: {
+                asOfDate: new Date(asOfDate),
+                pkrToGbp,
+                pkrToUsd,
+                pkrToEur
+            }
+        });
+
+        res.status(201).json(fxRate);
+    } catch (error) {
+        console.error('Error creating FX rate:', error);
+        res.status(500).json({
+            error: 'Failed to create FX rate',
+            details: error.message
+        });
+    }
+});
+
+app.put('/api/pricing/fx-rates/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { pkrToGbp, pkrToUsd, pkrToEur } = req.body;
+
+        const fxRate = await prisma.fxRate.update({
+            where: { id },
+            data: {
+                pkrToGbp,
+                pkrToUsd,
+                pkrToEur
+            }
+        });
+
+        res.json(fxRate);
+    } catch (error) {
+        console.error('Error updating FX rate:', error);
+        res.status(500).json({ error: 'Failed to update FX rate' });
+    }
+});
+
+app.delete('/api/pricing/fx-rates/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.fxRate.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting FX rate:', error);
+        res.status(500).json({ error: 'Failed to delete FX rate' });
+    }
+});
+
+// Duty Rates
+app.get('/api/pricing/duty-rates', async (req, res) => {
+    try {
+        const { country, hsCode } = req.query;
+        const where = {};
+        if (country) where.country = country;
+        if (hsCode) where.hsCode = hsCode;
+
+        const dutyRates = await prisma.dutyRate.findMany({
+            where,
+            orderBy: [{ country: 'asc' }, { hsCode: 'asc' }, { effectiveFrom: 'desc' }]
+        });
+
+        res.json(dutyRates);
+    } catch (error) {
+        console.error('Error fetching duty rates:', error);
+        res.status(500).json({ error: 'Failed to fetch duty rates' });
+    }
+});
+
+app.post('/api/pricing/duty-rates', requireSuper, async (req, res) => {
+    try {
+        const { country, hsCode, ratePercent, effectiveFrom, effectiveTo } = req.body;
+
+        const dutyRate = await prisma.dutyRate.create({
+            data: {
+                country,
+                hsCode,
+                ratePercent,
+                effectiveFrom: new Date(effectiveFrom),
+                effectiveTo: effectiveTo ? new Date(effectiveTo) : null
+            }
+        });
+
+        res.status(201).json(dutyRate);
+    } catch (error) {
+        console.error('Error creating duty rate:', error);
+        res.status(500).json({
+            error: 'Failed to create duty rate',
+            details: error.message
+        });
+    }
+});
+
+app.put('/api/pricing/duty-rates/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { ratePercent, effectiveTo } = req.body;
+
+        const dutyRate = await prisma.dutyRate.update({
+            where: { id },
+            data: {
+                ratePercent,
+                effectiveTo: effectiveTo ? new Date(effectiveTo) : null
+            }
+        });
+
+        res.json(dutyRate);
+    } catch (error) {
+        console.error('Error updating duty rate:', error);
+        res.status(500).json({ error: 'Failed to update duty rate' });
+    }
+});
+
+app.delete('/api/pricing/duty-rates/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.dutyRate.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting duty rate:', error);
+        res.status(500).json({ error: 'Failed to delete duty rate' });
+    }
+});
+
+// VAT Rates
+app.get('/api/pricing/vat-rates', async (req, res) => {
+    try {
+        const { country } = req.query;
+        const where = {};
+        if (country) where.country = country;
+
+        const vatRates = await prisma.vatRate.findMany({
+            where,
+            orderBy: [{ country: 'asc' }, { base: 'asc' }, { effectiveFrom: 'desc' }]
+        });
+
+        res.json(vatRates);
+    } catch (error) {
+        console.error('Error fetching VAT rates:', error);
+        res.status(500).json({ error: 'Failed to fetch VAT rates' });
+    }
+});
+
+app.post('/api/pricing/vat-rates', requireSuper, async (req, res) => {
+    try {
+        const { country, ratePercent, base, effectiveFrom, effectiveTo } = req.body;
+
+        const vatRate = await prisma.vatRate.create({
+            data: {
+                country,
+                ratePercent,
+                base,
+                effectiveFrom: new Date(effectiveFrom),
+                effectiveTo: effectiveTo ? new Date(effectiveTo) : null
+            }
+        });
+
+        res.status(201).json(vatRate);
+    } catch (error) {
+        console.error('Error creating VAT rate:', error);
+        res.status(500).json({
+            error: 'Failed to create VAT rate',
+            details: error.message
+        });
+    }
+});
+
+app.put('/api/pricing/vat-rates/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { ratePercent, effectiveTo } = req.body;
+
+        const vatRate = await prisma.vatRate.update({
+            where: { id },
+            data: {
+                ratePercent,
+                effectiveTo: effectiveTo ? new Date(effectiveTo) : null
+            }
+        });
+
+        res.json(vatRate);
+    } catch (error) {
+        console.error('Error updating VAT rate:', error);
+        res.status(500).json({ error: 'Failed to update VAT rate' });
+    }
+});
+
+app.delete('/api/pricing/vat-rates/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.vatRate.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting VAT rate:', error);
+        res.status(500).json({ error: 'Failed to delete VAT rate' });
+    }
+});
+
+// Fees
+app.get('/api/pricing/fees', async (req, res) => {
+    try {
+        const { country } = req.query;
+        const where = {};
+        if (country) where.country = country;
+
+        const fees = await prisma.fee.findMany({
+            where,
+            orderBy: [{ country: 'asc' }, { name: 'asc' }]
+        });
+
+        res.json(fees);
+    } catch (error) {
+        console.error('Error fetching fees:', error);
+        res.status(500).json({ error: 'Failed to fetch fees' });
+    }
+});
+
+app.post('/api/pricing/fees', requireSuper, async (req, res) => {
+    try {
+        const { country, name, method, value } = req.body;
+
+        const fee = await prisma.fee.create({
+            data: {
+                country,
+                name,
+                method,
+                value
+            }
+        });
+
+        res.status(201).json(fee);
+    } catch (error) {
+        console.error('Error creating fee:', error);
+        res.status(500).json({
+            error: 'Failed to create fee',
+            details: error.message
+        });
+    }
+});
+
+app.put('/api/pricing/fees/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name, method, value } = req.body;
+
+        const fee = await prisma.fee.update({
+            where: { id },
+            data: {
+                name,
+                method,
+                value
+            }
+        });
+
+        res.json(fee);
+    } catch (error) {
+        console.error('Error updating fee:', error);
+        res.status(500).json({ error: 'Failed to update fee' });
+    }
+});
+
+app.delete('/api/pricing/fees/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.fee.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting fee:', error);
+        res.status(500).json({ error: 'Failed to delete fee' });
+    }
+});
+
+// Thresholds
+app.get('/api/pricing/thresholds', async (req, res) => {
+    try {
+        const { country } = req.query;
+        const where = {};
+        if (country) where.country = country;
+
+        const thresholds = await prisma.threshold.findMany({
+            where,
+            orderBy: [{ country: 'asc' }, { ruleName: 'asc' }]
+        });
+
+        res.json(thresholds);
+    } catch (error) {
+        console.error('Error fetching thresholds:', error);
+        res.status(500).json({ error: 'Failed to fetch thresholds' });
+    }
+});
+
+app.post('/api/pricing/thresholds', requireSuper, async (req, res) => {
+    try {
+        const { country, ruleName, jsonRule } = req.body;
+
+        const threshold = await prisma.threshold.create({
+            data: {
+                country,
+                ruleName,
+                jsonRule
+            }
+        });
+
+        res.status(201).json(threshold);
+    } catch (error) {
+        console.error('Error creating threshold:', error);
+        res.status(500).json({
+            error: 'Failed to create threshold',
+            details: error.message
+        });
+    }
+});
+
+app.put('/api/pricing/thresholds/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { jsonRule } = req.body;
+
+        const threshold = await prisma.threshold.update({
+            where: { id },
+            data: {
+                jsonRule
+            }
+        });
+
+        res.json(threshold);
+    } catch (error) {
+        console.error('Error updating threshold:', error);
+        res.status(500).json({ error: 'Failed to update threshold' });
+    }
+});
+
+app.delete('/api/pricing/thresholds/:id', requireSuper, async (req, res) => {
+    try {
+        const { id } = req.params;
+        await prisma.threshold.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting threshold:', error);
+        res.status(500).json({ error: 'Failed to delete threshold' });
     }
 });
 

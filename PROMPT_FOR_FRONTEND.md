@@ -13,24 +13,28 @@ The backend now supports uploading Excel files to automatically create leads and
 
 1. **Add an Excel Upload Button** to the Priority Actions page or dashboard
 2. **File Upload Functionality:**
+
    - Accept `.xlsx` and `.xls` files only
    - Maximum file size: 5MB
    - Validate file before upload
    - Show upload progress/loading state
 
 3. **API Integration:**
+
    - **Endpoint:** `POST https://backoffice-forthandvale-backend.vercel.app/api/leads/upload-excel`
    - **Method:** POST
    - **Content-Type:** `multipart/form-data`
    - **Field Name:** `file`
 
 4. **User Experience:**
+
    - Show loading spinner during upload
    - Display success message with results breakdown
    - Show error messages if upload fails
    - Auto-refresh priority actions list after successful upload
 
 5. **Success Response Format:**
+
 ```json
 {
   "success": true,
@@ -52,6 +56,7 @@ The backend now supports uploading Excel files to automatically create leads and
 ```
 
 6. **Design Preferences:**
+
    - Modern, clean button design
    - Option for drag-and-drop (nice to have)
    - Show detailed results after upload
@@ -65,14 +70,16 @@ The backend now supports uploading Excel files to automatically create leads and
 
 **Example Excel File Format:**
 The user will upload an Excel file with columns:
+
 - Company
-- Website  
+- Website
 - Visitor Count (MW)
 - LinkedIn Company
 - Suggested Buyer Roles
 - Example Contacts (LinkedIn)
 
 **Expected Behavior:**
+
 1. User clicks "Upload Excel" button
 2. File picker opens
 3. User selects Excel file
@@ -88,6 +95,7 @@ Add this button to the Priority Actions page header, near the "Create Action" or
 [Specify your framework: React, Vue, Angular, etc.]
 
 **Additional Notes:**
+
 - The backend automatically calculates priority based on visitor count, contacts, and buyer roles
 - No need to show the scoring algorithm to users
 - Focus on simple, intuitive UI
@@ -112,13 +120,18 @@ const ExcelUpload = () => {
 
     setUploading(true);
     try {
-      const res = await fetch('https://backoffice-forthandvale-backend.vercel.app/api/leads/upload-excel', {
-        method: 'POST',
-        body: formData
-      });
+      const res = await fetch(
+        'https://backoffice-forthandvale-backend.vercel.app/api/leads/upload-excel',
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
       const data = await res.json();
       if (res.ok) {
-        alert(`Success! Created ${data.results.actionsCreated} priority actions`);
+        alert(
+          `Success! Created ${data.results.actionsCreated} priority actions`
+        );
         window.location.reload(); // Refresh the page
       }
     } catch (err) {
@@ -130,12 +143,12 @@ const ExcelUpload = () => {
 
   return (
     <>
-      <input 
-        type="file" 
-        accept=".xlsx,.xls" 
-        onChange={handleUpload} 
-        style={{display: 'none'}} 
-        id="excel-upload" 
+      <input
+        type="file"
+        accept=".xlsx,.xls"
+        onChange={handleUpload}
+        style={{ display: 'none' }}
+        id="excel-upload"
         disabled={uploading}
       />
       <button onClick={() => document.getElementById('excel-upload').click()}>
@@ -149,4 +162,3 @@ const ExcelUpload = () => {
 ---
 
 **Questions?** Check `FRONTEND_INTEGRATION.md` for complete component examples with drag-and-drop, error handling, and styling.
-

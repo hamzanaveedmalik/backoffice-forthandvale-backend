@@ -10,9 +10,12 @@
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:seed:pricing": "tsx prisma/seed.pricing.ts",
     "db:studio": "prisma studio",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "pricing:template": "node scripts/create-pricing-template.js",
+    "pricing:test": "node tests/pricing.golden.test.js",
     "lint": "eslint .",
     "type-check": "tsc --noEmit"
   },

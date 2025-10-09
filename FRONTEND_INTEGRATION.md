@@ -18,7 +18,7 @@ const ExcelUploadButton = () => {
 
   const handleFileUpload = async (event) => {
     const file = event.target.files[0];
-    
+
     if (!file) return;
 
     // Validate file type
@@ -53,7 +53,9 @@ const ExcelUploadButton = () => {
 
       if (response.ok) {
         setResult(data);
-        alert(`Success! Processed ${data.results.processed} leads and created ${data.results.actionsCreated} priority actions!`);
+        alert(
+          `Success! Processed ${data.results.processed} leads and created ${data.results.actionsCreated} priority actions!`
+        );
         // Refresh priority actions list
         window.location.reload(); // Or call your data refresh function
       } else {
@@ -88,11 +90,7 @@ const ExcelUploadButton = () => {
         </button>
       </label>
 
-      {error && (
-        <div className="alert alert-error">
-          ❌ {error}
-        </div>
-      )}
+      {error && <div className="alert alert-error">❌ {error}</div>}
 
       {result && (
         <div className="alert alert-success">
@@ -131,9 +129,9 @@ const ExcelUploadDropzone = () => {
   const handleDrag = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
+    if (e.type === 'dragenter' || e.type === 'dragover') {
       setDragActive(true);
-    } else if (e.type === "dragleave") {
+    } else if (e.type === 'dragleave') {
       setDragActive(false);
     }
   };
@@ -224,7 +222,9 @@ const ExcelUploadDropzone = () => {
           onDragLeave={handleDrag}
           onDragOver={handleDrag}
           onDrop={handleDrop}
-          className={`dropzone ${dragActive ? 'drag-active' : ''} ${uploading ? 'uploading' : ''}`}
+          className={`dropzone ${dragActive ? 'drag-active' : ''} ${
+            uploading ? 'uploading' : ''
+          }`}
           style={{
             border: '2px dashed #ccc',
             borderRadius: '8px',
@@ -242,10 +242,19 @@ const ExcelUploadDropzone = () => {
             </>
           ) : (
             <>
-              <div className="icon" style={{ fontSize: '48px', marginBottom: '16px' }}>
+              <div
+                className="icon"
+                style={{ fontSize: '48px', marginBottom: '16px' }}
+              >
                 📊
               </div>
-              <p style={{ fontSize: '18px', fontWeight: 'bold', marginBottom: '8px' }}>
+              <p
+                style={{
+                  fontSize: '18px',
+                  fontWeight: 'bold',
+                  marginBottom: '8px',
+                }}
+              >
                 {dragActive ? 'Drop your Excel file here' : 'Upload Excel File'}
               </p>
               <p style={{ color: '#666', marginBottom: '16px' }}>
@@ -260,31 +269,46 @@ const ExcelUploadDropzone = () => {
       </form>
 
       {error && (
-        <div className="alert alert-error" style={{
-          marginTop: '20px',
-          padding: '16px',
-          backgroundColor: '#ffebee',
-          borderRadius: '8px',
-          color: '#c62828',
-        }}>
+        <div
+          className="alert alert-error"
+          style={{
+            marginTop: '20px',
+            padding: '16px',
+            backgroundColor: '#ffebee',
+            borderRadius: '8px',
+            color: '#c62828',
+          }}
+        >
           <strong>❌ Error:</strong> {error}
         </div>
       )}
 
       {result && (
-        <div className="alert alert-success" style={{
-          marginTop: '20px',
-          padding: '16px',
-          backgroundColor: '#e8f5e9',
-          borderRadius: '8px',
-          color: '#2e7d32',
-        }}>
+        <div
+          className="alert alert-success"
+          style={{
+            marginTop: '20px',
+            padding: '16px',
+            backgroundColor: '#e8f5e9',
+            borderRadius: '8px',
+            color: '#2e7d32',
+          }}
+        >
           <h3 style={{ marginTop: 0 }}>✅ Upload Successful!</h3>
-          <p><strong>Processed:</strong> {result.results.processed} leads</p>
-          <p><strong>Leads Created:</strong> {result.results.leadsCreated}</p>
-          <p><strong>Leads Updated:</strong> {result.results.leadsUpdated}</p>
-          <p><strong>Priority Actions Created:</strong> {result.results.actionsCreated}</p>
-          
+          <p>
+            <strong>Processed:</strong> {result.results.processed} leads
+          </p>
+          <p>
+            <strong>Leads Created:</strong> {result.results.leadsCreated}
+          </p>
+          <p>
+            <strong>Leads Updated:</strong> {result.results.leadsUpdated}
+          </p>
+          <p>
+            <strong>Priority Actions Created:</strong>{' '}
+            {result.results.actionsCreated}
+          </p>
+
           <div style={{ marginTop: '16px' }}>
             <strong>Priority Breakdown:</strong>
             <ul style={{ listStyle: 'none', padding: 0, marginTop: '8px' }}>
@@ -430,8 +454,12 @@ const PriorityActionsPage = () => {
 }
 
 @keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 ```
 
@@ -445,10 +473,10 @@ const PriorityActionsPage = () => {
 // After successful upload, dispatch action to refresh priority actions
 const handleFileUpload = async (file) => {
   // ... upload code ...
-  
+
   if (response.ok) {
     setResult(data);
-    
+
     // Refresh priority actions
     dispatch(fetchPriorityActions()); // Redux
     // or
@@ -464,11 +492,13 @@ const handleFileUpload = async (file) => {
 ## 🧪 Testing the Upload
 
 1. **Test with your Excel file:**
+
    - Make sure columns match: Company, Website, Visitor Count (MW), etc.
    - Upload via the button
    - Check browser console for errors
 
 2. **Verify priority actions appear:**
+
    - Navigate to priority actions page
    - Verify new actions are visible
    - Check priority levels match visitor counts
@@ -519,12 +549,14 @@ const ResponsiveExcelUpload = () => {
 **Endpoint:** `POST /api/leads/upload-excel`
 
 **Request:**
+
 - Content-Type: `multipart/form-data`
 - Field name: `file`
 - Accepted: `.xlsx`, `.xls`
 - Max size: 5MB
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -569,4 +601,3 @@ const ResponsiveExcelUpload = () => {
 ---
 
 **Need help?** Check `EXCEL_UPLOAD_GUIDE.md` for backend details and scoring algorithm.
-

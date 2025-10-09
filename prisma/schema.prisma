@@ -44,6 +44,7 @@ model User {
   ownedLeads          Lead[]           @relation("LeadOwner")
   requestedSamples    Sample[]         @relation("SampleRequester")
   assignedActions     PriorityAction[] @relation("ActionAssignee")
+  createdImports      Import[]         @relation("ImportCreator")
   org                 Org              @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("users")
@@ -354,4 +355,177 @@ enum ActionStatus {
   COMPLETED
   CANCELLED
   OVERDUE
+}
+
+// ==================== PRICING MODULE ====================
+
+model Product {
+  id          String        @id @default(uuid())
+  sku         String        @unique
+  name        String
+  hsCode      String
+  weightKg    Decimal
+  volumeM3    Decimal
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  importItems ImportItem[]
+
+  @@map("products")
+}
+
+model Import {
+  id          String       @id @default(uuid())
+  name        String
+  createdById String
+  createdAt   DateTime     @default(now())
+  items       ImportItem[]
+  pricingRuns PricingRun[]
+  createdBy   User         @relation("ImportCreator", fields: [createdById], references: [id])
+
+  @@map("imports")
+}
+
+model ImportItem {
+  id               String            @id @default(uuid())
+  importId         String
+  productId        String
+  purchasePricePkr Decimal
+  units            Int
+  import           Import            @relation(fields: [importId], references: [id], onDelete: Cascade)
+  product          Product           @relation(fields: [productId], references: [id])
+  pricingRunItems  PricingRunItem[]
+
+  @@map("import_items")
+}
+
+model FxRate {
+  id        String   @id @default(uuid())
+  asOfDate  DateTime @unique
+  pkrToGbp  Decimal
+  pkrToUsd  Decimal
+  pkrToEur  Decimal
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("fx_rates")
+}
+
+model DutyRate {
+  id            String    @id @default(uuid())
+  country       Country
+  hsCode        String
+  ratePercent   Decimal
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([country, hsCode, effectiveFrom])
+  @@map("duty_rates")
+}
+
+model VatRate {
+  id          String      @id @default(uuid())
+  country     Country
+  ratePercent Decimal
+  base        VatBase
+  effectiveFrom DateTime
+  effectiveTo   DateTime?
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@unique([country, base, effectiveFrom])
+  @@map("vat_rates")
+}
+
+model Fee {
+  id        String     @id @default(uuid())
+  country   Country
+  name      String
+  method    FeeMethod
+  value     Decimal
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("fees")
+}
+
+model Threshold {
+  id        String   @id @default(uuid())
+  country   Country
+  ruleName  String
+  jsonRule  Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([country, ruleName])
+  @@map("thresholds")
+}
+
+model PricingRun {
+  id              String           @id @default(uuid())
+  importId        String
+  destination     Country
+  incoterm        Incoterm
+  fxDate          DateTime
+  marginMode      MarginMode
+  marginValue     Decimal
+  freightModel    Json
+  insuranceModel  Json
+  feesOverrides   Json?
+  thresholdToggles Json?
+  rounding        Json?
+  snapshotRates   Json // Snapshot of all rates used
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  import          Import           @relation(fields: [importId], references: [id], onDelete: Cascade)
+  items           PricingRunItem[]
+
+  @@map("pricing_runs")
+}
+
+model PricingRunItem {
+  id            String     @id @default(uuid())
+  pricingRunId  String
+  importItemId  String
+  breakdownJson Json // All inputs, intermediate values, and outputs
+  basePkr       Decimal
+  sellingPrice  Decimal
+  landedCost    Decimal
+  marginPct     Decimal
+  createdAt     DateTime   @default(now())
+  pricingRun    PricingRun @relation(fields: [pricingRunId], references: [id], onDelete: Cascade)
+  importItem    ImportItem @relation(fields: [importItemId], references: [id], onDelete: Cascade)
+
+  @@map("pricing_run_items")
+}
+
+enum Country {
+  UK
+  US
+  EU
+}
+
+enum VatBase {
+  CIF
+  CIF_PLUS_DUTY
+  CIF_PLUS_DUTY_FEES
+}
+
+enum FeeMethod {
+  FIXED
+  PER_KG
+  PER_UNIT
+  PCT
+}
+
+enum Incoterm {
+  FOB
+  CIF
+  DDP
+}
+
+enum MarginMode {
+  MARGIN
+  MARKUP
 }
