@@ -1318,6 +1318,60 @@ app.get('/api/pricing/runs/:id/export', async (req, res) => {
 
 // ==================== RATE MANAGEMENT (RBAC: Super User Only) ====================
 
+// Get FX rate with optional date parameter (backward compatible)
+app.get('/api/fx-rates', async (req, res) => {
+    try {
+        const { source, target, date } = req.query;
+
+        if (!source || !target) {
+            return res.status(400).json({ error: 'source and target currencies are required' });
+        }
+
+        // Get FX rate (latest if no date, or closest to date)
+        let fxRate;
+        if (date) {
+            const targetDate = new Date(date);
+            fxRate = await prisma.fxRate.findFirst({
+                where: {
+                    asOfDate: {
+                        lte: targetDate
+                    }
+                },
+                orderBy: { asOfDate: 'desc' }
+            });
+        } else {
+            fxRate = await prisma.fxRate.findFirst({
+                orderBy: { asOfDate: 'desc' }
+            });
+        }
+
+        if (!fxRate) {
+            return res.status(404).json({ error: 'No FX rates found' });
+        }
+
+        // Map currency pair to rate
+        const rateField = `${source.toLowerCase()}To${target.charAt(0).toUpperCase() + target.slice(1).toLowerCase()}`;
+        const rate = fxRate[rateField];
+
+        if (rate === undefined) {
+            return res.status(400).json({
+                error: `Currency pair ${source}/${target} not supported`,
+                supportedPairs: ['PKR/GBP', 'PKR/USD', 'PKR/EUR']
+            });
+        }
+
+        res.json({
+            date: fxRate.asOfDate.toISOString().split('T')[0],
+            rate: parseFloat(rate),
+            sourceCurrency: source.toUpperCase(),
+            targetCurrency: target.toUpperCase()
+        });
+    } catch (error) {
+        console.error('Error fetching FX rate:', error);
+        res.status(500).json({ error: 'Failed to fetch FX rate' });
+    }
+});
+
 // Get latest FX rate for specific currency pair (frontend-friendly)
 app.get('/api/fx-rates/latest', async (req, res) => {
     try {
