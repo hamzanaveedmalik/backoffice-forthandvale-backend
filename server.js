@@ -1413,6 +1413,20 @@ app.get('/api/fx-rates/latest', async (req, res) => {
     }
 });
 
+// Manually trigger FX rate update (SUPER only)
+app.post('/api/pricing/fx-rates/fetch', requireSuper, async (req, res) => {
+    try {
+        // TODO: Implement with fxRateService when ready
+        return res.status(501).json({
+            error: 'FX rate auto-fetch not yet implemented',
+            message: 'Use POST /api/pricing/fx-rates to add rates manually for now'
+        });
+    } catch (error) {
+        console.error('Error fetching FX rates:', error);
+        res.status(500).json({ error: 'Failed to fetch FX rates' });
+    }
+});
+
 // FX Rates (all rates - management interface)
 app.get('/api/pricing/fx-rates', async (req, res) => {
     try {
