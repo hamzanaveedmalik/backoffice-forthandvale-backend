@@ -58,8 +58,11 @@ app.use(cors({
         const allowedOrigins = [
             'https://backoffice.forthandvale.com',           // Production frontend
             'http://backoffice.forthandvale.com',            // Production frontend (http)
+            'http://localhost:3000',                         // Local frontend development
+            'https://localhost:3000',                        // Local frontend development (https)
             /^https:\/\/.*\.vercel\.app$/,                   // All Vercel preview deployments
-            /^http:\/\/localhost:\d+$/,                      // All localhost ports (development)
+            /^http:\/\/localhost:\d+$/,                      // All other localhost ports (development)
+            /^https:\/\/localhost:\d+$/,                     // All other localhost ports (https)
         ];
 
         // Check if origin matches any allowed pattern
@@ -1121,9 +1124,242 @@ app.get('/api/pricing/runs', async (req, res) => {
     }
 });
 
+// Update pricing run (e.g., save name)
+app.patch('/api/pricing/runs/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { name } = req.body;
+
+        const pricingRun = await prisma.pricingRun.update({
+            where: { id },
+            data: { name }
+        });
+
+        res.json({ success: true, pricingRun });
+    } catch (error) {
+        console.error('Error updating pricing run:', error);
+        res.status(500).json({ error: 'Failed to update pricing run' });
+    }
+});
+
+// Duplicate pricing run
+app.post('/api/pricing/runs/:id/duplicate', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Get original pricing run
+        const originalRun = await prisma.pricingRun.findUnique({
+            where: { id },
+            include: {
+                items: true
+            }
+        });
+
+        if (!originalRun) {
+            return res.status(404).json({ error: 'Pricing run not found' });
+        }
+
+        // Create new pricing run with same config
+        const newRun = await prisma.pricingRun.create({
+            data: {
+                name: originalRun.name ? `${originalRun.name} (Copy)` : null,
+                importId: originalRun.importId,
+                destination: originalRun.destination,
+                incoterm: originalRun.incoterm,
+                fxDate: originalRun.fxDate,
+                marginMode: originalRun.marginMode,
+                marginValue: originalRun.marginValue,
+                freightModel: originalRun.freightModel,
+                insuranceModel: originalRun.insuranceModel,
+                feesOverrides: originalRun.feesOverrides,
+                thresholdToggles: originalRun.thresholdToggles,
+                rounding: originalRun.rounding,
+                snapshotRates: originalRun.snapshotRates
+            }
+        });
+
+        // Copy all pricing run items
+        for (const item of originalRun.items) {
+            await prisma.pricingRunItem.create({
+                data: {
+                    pricingRunId: newRun.id,
+                    importItemId: item.importItemId,
+                    breakdownJson: item.breakdownJson,
+                    basePkr: item.basePkr,
+                    sellingPrice: item.sellingPrice,
+                    landedCost: item.landedCost,
+                    marginPct: item.marginPct
+                }
+            });
+        }
+
+        res.status(201).json({
+            runId: newRun.id,
+            status: 'completed', // Already has items copied
+            createdAt: newRun.createdAt
+        });
+    } catch (error) {
+        console.error('Error duplicating pricing run:', error);
+        res.status(500).json({ error: 'Failed to duplicate pricing run' });
+    }
+});
+
+// Export pricing run results as CSV
+app.get('/api/pricing/runs/:id/export', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { format = 'csv' } = req.query;
+
+        if (format !== 'csv') {
+            return res.status(400).json({ error: 'Only CSV format is supported' });
+        }
+
+        // Get pricing run with all items
+        const pricingRun = await prisma.pricingRun.findUnique({
+            where: { id },
+            include: {
+                import: {
+                    select: {
+                        name: true
+                    }
+                },
+                items: {
+                    include: {
+                        importItem: {
+                            include: {
+                                product: true
+                            }
+                        }
+                    },
+                    orderBy: { createdAt: 'asc' }
+                }
+            }
+        });
+
+        if (!pricingRun) {
+            return res.status(404).json({ error: 'Pricing run not found' });
+        }
+
+        // Build CSV
+        const csvRows = [];
+
+        // Header row
+        csvRows.push([
+            'SKU',
+            'Product Name',
+            'HS Code',
+            'Units',
+            'Weight (kg)',
+            'Volume (m³)',
+            'Base PKR',
+            'FX Rate',
+            'Base (Dest)',
+            'Freight',
+            'Insurance',
+            'CIF',
+            'Duty',
+            'Fees',
+            'Tax',
+            'Landed Cost',
+            'Sell Price',
+            'Margin %',
+            'Currency'
+        ].join(','));
+
+        // Get currency from destination
+        const currencyMap = { UK: 'GBP', US: 'USD', EU: 'EUR' };
+        const currency = currencyMap[pricingRun.destination] || 'GBP';
+
+        // Get FX rate from snapshot
+        const fxRateField = pricingRun.destination === 'UK' ? 'pkrToGbp' :
+            pricingRun.destination === 'US' ? 'pkrToUsd' : 'pkrToEur';
+        const fxRate = pricingRun.snapshotRates?.fxRate?.[fxRateField] || 0;
+
+        // Data rows
+        for (const item of pricingRun.items) {
+            const product = item.importItem.product;
+            const breakdown = item.breakdownJson;
+
+            csvRows.push([
+                product.sku,
+                `"${product.name.replace(/"/g, '""')}"`, // Escape quotes
+                product.hsCode,
+                item.importItem.units,
+                parseFloat(product.weightKg).toFixed(3),
+                parseFloat(product.volumeM3).toFixed(6),
+                parseFloat(item.basePkr).toFixed(2),
+                fxRate.toFixed(6),
+                breakdown.calculations?.base?.toFixed(2) || '0.00',
+                breakdown.calculations?.freightPerUnit?.toFixed(2) || '0.00',
+                breakdown.calculations?.insurancePerUnit?.toFixed(2) || '0.00',
+                breakdown.calculations?.customsValue?.toFixed(2) || '0.00',
+                breakdown.calculations?.duty?.toFixed(2) || '0.00',
+                breakdown.calculations?.totalFees?.toFixed(2) || '0.00',
+                breakdown.calculations?.tax?.toFixed(2) || '0.00',
+                parseFloat(item.landedCost).toFixed(2),
+                parseFloat(item.sellingPrice).toFixed(2),
+                (parseFloat(item.marginPct) * 100).toFixed(2),
+                currency
+            ].join(','));
+        }
+
+        const csv = csvRows.join('\n');
+
+        // Set headers for file download
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="pricing-run-${id}.csv"`);
+        res.send(csv);
+
+    } catch (error) {
+        console.error('Error exporting pricing run:', error);
+        res.status(500).json({ error: 'Failed to export pricing run' });
+    }
+});
+
 // ==================== RATE MANAGEMENT (RBAC: Super User Only) ====================
 
-// FX Rates
+// Get latest FX rate for specific currency pair (frontend-friendly)
+app.get('/api/fx-rates/latest', async (req, res) => {
+    try {
+        const { source, target } = req.query;
+
+        if (!source || !target) {
+            return res.status(400).json({ error: 'source and target currencies are required' });
+        }
+
+        // Get latest FX rate
+        const fxRate = await prisma.fxRate.findFirst({
+            orderBy: { asOfDate: 'desc' }
+        });
+
+        if (!fxRate) {
+            return res.status(404).json({ error: 'No FX rates found' });
+        }
+
+        // Map currency pair to rate
+        const rateField = `${source.toLowerCase()}To${target.charAt(0).toUpperCase() + target.slice(1).toLowerCase()}`;
+        const rate = fxRate[rateField];
+
+        if (rate === undefined) {
+            return res.status(400).json({
+                error: `Currency pair ${source}/${target} not supported`,
+                supportedPairs: ['PKR/GBP', 'PKR/USD', 'PKR/EUR']
+            });
+        }
+
+        res.json({
+            date: fxRate.asOfDate.toISOString().split('T')[0],
+            rate: parseFloat(rate),
+            sourceCurrency: source.toUpperCase(),
+            targetCurrency: target.toUpperCase()
+        });
+    } catch (error) {
+        console.error('Error fetching latest FX rate:', error);
+        res.status(500).json({ error: 'Failed to fetch FX rate' });
+    }
+});
+
+// FX Rates (all rates - management interface)
 app.get('/api/pricing/fx-rates', async (req, res) => {
     try {
         const fxRates = await prisma.fxRate.findMany({
